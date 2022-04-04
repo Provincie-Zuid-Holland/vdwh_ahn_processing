@@ -1,7 +1,8 @@
 # Databricks notebook source
 # MAGIC %md
 # MAGIC 
-# MAGIC ## This notebook does the preprocessing for the height data or AHN data.
+# MAGIC ## This notebook does the preprocessing for the height data or AHN data of the .laz format.
+# MAGIC ### LAZ files are quite large a lot of ram is needed to process them 250 gb ram is not unusual
 
 # COMMAND ----------
 
@@ -14,6 +15,7 @@ from rasterio.crs import CRS
 from affine import Affine
 from rasterio import windows
 from rasterio import mask
+from rasterio import merge
 import math
 import pandas as pd
 from glob import glob
@@ -127,32 +129,53 @@ def merge_raster(input1,bounds, res, nodata, precision):
     import warnings
     warnings.warn("Deprecated; Use rasterio.merge instead", DeprecationWarning)
     return rasterio.merge.merge(input1, bounds, res, nodata, precision)
+  
+def merge_tif_files(files, out_put_name, shape_file):
+  
+  bounds=None
+  res=None
+  nodata=None
+  precision=None
+    
+  for file in range(0,len(files)):
+    
+    if file == 0:
+      # For the first 2 files.
+      dataset1 = rasterio.open(files[0])
+      dataset2 = rasterio.open(files[1])
+          
+      dest, output_transform=merge_raster([dataset1,dataset2], bounds=bounds, res=res, nodata=nodata, precision=precision)
 
+      with rasterio.open(files[0]) as src:
+              out_meta = src.meta.copy()    
+      out_meta.update({"driver": "GTiff",
+                       "height": dest.shape[1],
+                       "width": dest.shape[2],
+                       "transform": output_transform})
+      with rasterio.open("/home/mergedRasters.tif", "w", **out_meta) as dest1:
+              dest1.write(dest)
+          
+    if file >= 2:
+      # Merge the file with the already done ones.
+      dataset1 = rasterio.open("/home/mergedRasters.tif")
+      dataset2 = rasterio.open(files[file])
 
+      dest, output_transform=merge_raster([dataset1,dataset2], bounds=bounds, res=res, nodata=nodata, precision=precision)
 
-# COMMAND ----------
+      with rasterio.open("/home/mergedRasters.tif") as src:
+              out_meta = src.meta.copy()    
+      out_meta.update({"driver": "GTiff",
+                       "height": dest.shape[1],
+                       "width": dest.shape[2],
+                       "transform": output_transform})
+      with rasterio.open("/home/mergedRasters.tif", "w", **out_meta) as dest1:
+              dest1.write(dest)
 
-# MAGIC %md
-# MAGIC 
-# MAGIC # Convert Height from .laz to layer in a .tif file.
-
-# COMMAND ----------
-
-!pip install pylas[lazrs]
-
-# COMMAND ----------
-
-# MAGIC %sh
-# MAGIC 
-# MAGIC ls /dbfs/mnt/actueelhoogtebestand/ahn3/Waterleidingduinen/
-
-# COMMAND ----------
-
-# Arguments fill in for you local enviroment.
-path_laz = "/dbfs/mnt/actueelhoogtebestand/ahn3/Waterleidingduinen/C_24HZ2.LAZ"
-path_tif = "/dbfs/mnt/actueelhoogtebestand/ahn3/Waterleidingduinen/C_24HZ2_test_method.tif"
-
-# COMMAND ----------
+  # Crop the combined file with the geojson.
+  __make_the_crop(shape_file,"/home/mergedRasters.tif", "/home/mergedRasters_corrupted.tif")
+  
+  
+  shutil.move("/home/mergedRasters_corrupted.tif", out_put_name)
 
 def run_laz_to_tif(path_laz, path_output_tif, fill_up = True):
   
@@ -164,6 +187,7 @@ def run_laz_to_tif(path_laz, path_output_tif, fill_up = True):
   
   # Make a parquet file from a laz file if it does not exist.
   if os.path.isfile(path_parquet) != True:
+    print("Parquet file not found converting laz file to parquet file.")
     laz = pylas.read(path_laz)
 
     cloud_df = pd.DataFrame({
@@ -200,7 +224,10 @@ def run_laz_to_tif(path_laz, path_output_tif, fill_up = True):
     cloud_df["height"] = list(map(lambda x: 0 if pd.isnull(x[0]) else x[0] - x[1], np.array([cloud_df["z_vegetation"], cloud_df["z_maaiveld"]]).T))
     sparkDF = spark.createDataFrame(cloud_df)
     sparkDF.write.format("delta").mode("overwrite").save(path_parquet)
-  
+    del cloud_df
+  else:
+    print("Parquet file found")
+    
   #Checkpoint.
   sparkDF = spark \
   .read \
@@ -211,6 +238,7 @@ def run_laz_to_tif(path_laz, path_output_tif, fill_up = True):
   sparkDF = sparkDF.fillna(0)
   
   if fill_up == True:
+    print("Proceding to filling empty data.")
     # Fill up empty files based on it's nearest neighbour.
     windowX  = Window.orderBy(sparkDF.x)
     windowY = Window.orderBy(sparkDF.y)
@@ -291,57 +319,10 @@ def run_laz_to_tif(path_laz, path_output_tif, fill_up = True):
     with rasterio.open(temp_path_tif, 'w', **meta) as outds:        
             outds.write(pixel_data)
         
-    shutil.move(temp_path_tif, path_tif) 
+    
+    shutil.move(temp_path_tif, path_output_tif) 
 
-# COMMAND ----------
-
-run_laz_to_tif(path_laz,path_tif)
-
-# COMMAND ----------
-
-
-
-# COMMAND ----------
-
-# MAGIC %sh
-# MAGIC 
-# MAGIC ls /dbfs/mnt/actueelhoogtebestand/ahn3/Waterleidingduinen/
-
-# COMMAND ----------
-
-for file in glob("/dbfs/mnt/actueelhoogtebestand/ahn3/Waterleidingduinen/*.tif"):
-  print(file)
-
-# COMMAND ----------
-
-def merge_tif_files(files, out_put_name):
-
-  dataset1 = rasterio.open(files[0])
-  dataset2 = rasterio.open(files[1])
-
-  dest, output_transform=merge_raster([dataset1,dataset2],bounds, res, nodata, precision)
-
-  with rasterio.open(files[0]) as src:
-          out_meta = src.meta.copy()    
-  out_meta.update({"driver": "GTiff",
-                   "height": dest.shape[1],
-                   "width": dest.shape[2],
-                   "transform": output_transform})
-  with rasterio.open("/home/tmp/mergedRasters.tif", "w", **out_meta) as dest1:
-          dest1.write(dest)
-
-  shutil.move("/home/tmp/mergedRasters.tif", out_put_name)
-
-# COMMAND ----------
-
-# First to merge:
-merge_tif_files(["/dbfs/mnt/actueelhoogtebestand/ahn3/Waterleidingduinen/C_24HN1.tif","/dbfs/mnt/actueelhoogtebestand/ahn3/Waterleidingduinen/C_24HN2.tif"],"/dbfs/mnt/actueelhoogtebestand/ahn3/Waterleidingduinen/Coepelduynen_merge.tif")
-
-for file in glob("/dbfs/mnt/actueelhoogtebestand/ahn3/Waterleidingduinen/*(?!C_24HN1|C_24HN2).tif"):
-  merge_tif_files([file,"/dbfs/mnt/actueelhoogtebestand/ahn3/Waterleidingduinen/Coepelduynen_merge.tif"],"/dbfs/mnt/actueelhoogtebestand/ahn3/Waterleidingduinen/Coepelduynen_merge.tif")
-
-# COMMAND ----------
-
+    
 def __make_the_crop(load_shape, raster_path, raster_path_cropped):
     """
         This crops the sattelite image with a chosen shape.
@@ -372,14 +353,67 @@ def __make_the_crop(load_shape, raster_path, raster_path_cropped):
 
 # COMMAND ----------
 
-# MAGIC %sh
+# MAGIC %md
 # MAGIC 
-# MAGIC mkdir /home/temp
+# MAGIC # Convert Height from .laz to layer in a .tif file.
 
 # COMMAND ----------
 
-# Crop the .tif file.
-__make_the_crop("/dbfs/mnt/actueelhoogtebestand/ahn3/Waterleidingduinen/waterleidingduin_aaneensluitende_polygon.geojson","/dbfs/mnt/actueelhoogtebestand/ahn3/Waterleidingduinen/Coepelduynen_merge.tif","/home/temp/Coepelduynen_merge.tif")
+!pip install pylas[lazrs]
+
+# COMMAND ----------
+
+# Arguments fill in for you local enviroment.
+inpath_laz_file = "/dbfs/mnt/actueelhoogtebestand/ahn3/Waterleidingduinen/C_24HZ2.LAZ"
+inpath_tif_file = "/dbfs/mnt/actueelhoogtebestand/ahn3/Waterleidingduinen/C_24HZ2_test_method.tif"
+
+# COMMAND ----------
+
+for file in glob("/dbfs/mnt/actueelhoogtebestand/ahn4/*[!HN1].LAZ"):
+  print(file)
+
+# COMMAND ----------
+
+for file in glob("/dbfs/mnt/actueelhoogtebestand/ahn4/*"):
+  print(file)
+
+# COMMAND ----------
+
+run_laz_to_tif("/dbfs/mnt/actueelhoogtebestand/ahn4/C_24HZ1.LAZ","/dbfs/mnt/actueelhoogtebestand/ahn4/C_24HZ1.tif")
+
+# COMMAND ----------
+
+for file in glob("/dbfs/mnt/actueelhoogtebestand/ahn4/*[!HN1].LAZ"):
+  print(file)
+  run_laz_to_tif(file, file.replace(".LAZ",".tif"))
+
+# COMMAND ----------
+
+# Done laz to .tif files merge into one big .tif file.
+for file in glob("/dbfs/mnt/actueelhoogtebestand/ahn4/*.tif"):
+  print(file)
+
+# COMMAND ----------
+
+files_append = []
+for file in glob("/dbfs/mnt/actueelhoogtebestand/ahn4/*[!empty].tif"):
+  print(file)
+  files_append.append(file)
+
+# COMMAND ----------
+
+files_append.pop()
+
+# COMMAND ----------
+
+# Merge all .tif files into one.
+merge_tif_files(files_append,"/dbfs/mnt/actueelhoogtebestand/ahn4/ahn4_waterleiding_duinen.tif", "/dbfs/mnt/actueelhoogtebestand/ahn3/Waterleidingduinen/waterleidingduin_aaneensluitende_polygon.geojson")
+
+# COMMAND ----------
+
+# MAGIC %sh
+# MAGIC 
+# MAGIC mkdir /home/temp
 
 # COMMAND ----------
 
@@ -450,3 +484,109 @@ for file in glob("/dbfs/mnt/e34a505986aa74678a5a0e0f_satellite-images-nso/coepel
 # MAGIC %sh
 # MAGIC 
 # MAGIC mv /home/temp/* /dbfs/mnt/satellite-images-nso/coepelduynen/
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC 
+# MAGIC # Add only NDVI
+
+# COMMAND ----------
+
+for file in glob("/dbfs/mnt/e34a505986aa74678a5a0e0f_satellite-images-nso/waterleidingduinen/*.tif"):
+  print(file)
+
+# COMMAND ----------
+
+# MAGIC %sh
+# MAGIC 
+# MAGIC ls /dbfs/mnt/actueelhoogtebestand/ahn3/Waterleidingduinen/ahn3_waterleidingduinen.tif
+
+# COMMAND ----------
+
+file = "/dbfs/mnt/e34a505986aa74678a5a0e0f_satellite-images-nso/waterleidingduinen/20190422_111333_SV1-01_50cm_RD_11bit_RGBI_Noordwijkerhout_waterleidingduin_aaneensluitende_polygon_cropped.tif"
+
+with rasterio.open(file) as inds:  
+          #channel_normalisation = normalize_parameters(inds)
+          meta = inds.meta
+          meta.update(count = 1)   
+          tile = inds.read() # TODO is this behaviour similar to inds.read() ? MW: yes
+          ndvi = generate_ndvi_channel(tile)
+          #normalized_tile = np.array(normalise(tile, channel_normalisation, meta["width"], meta["height"]))            
+          #heightChannel = generate_vegetation_height_channel(vegetation_height_data, vegetation_height_transform, inds.meta["transform"], meta["width"], meta["height"])
+          #tile = np.append(tile, [heightChannel], axis=0)
+          #tile = np.append(tile, [ndvi], axis=0)
+          
+          file_to = file.replace(".tif","_ndvi_only.tif")
+          file_local = "/home/"+file_to.split("/")[-1]
+          with rasterio.open(file_local, 'w', **meta) as outds:        
+                outds.write_band(1,ndvi)
+                
+          shutil.move(file_local, file_to)
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC 
+# MAGIC # Merge ahn and NDVI .tif
+
+# COMMAND ----------
+
+file_tif_ahn = "/dbfs/mnt/actueelhoogtebestand/ahn3/Waterleidingduinen/ahn3_waterleiding_duinen.tif"
+file_tif_ndvi = "/dbfs/mnt/e34a505986aa74678a5a0e0f_satellite-images-nso/waterleidingduinen/20190729_111526_SV1-04_50cm_RD_11bit_RGBI_Lisse_waterleidingduin_aaneensluitende_polygon_cropped_ndvi_only.tif"
+
+# COMMAND ----------
+
+inds_ndvi = rasterio.open(file_tif_ndvi) 
+
+# COMMAND ----------
+
+with rasterio.open(file_tif_ahn, 'r') as inds:        
+  vegetation_height_data = inds.read()
+  vegetation_height_transform = inds.meta["transform"]
+
+# COMMAND ----------
+
+vegetation_height_data = vegetation_height_data.reshape(vegetation_height_data.shape[1],vegetation_height_data.shape[2])
+
+# COMMAND ----------
+
+with rasterio.open(file_tif_ndvi, 'r') as inds:      
+  meta = inds.meta
+  meta.update(count = 2)   
+  tile = inds.read() # TODO is this behaviour similar to inds.read() ? MW: yes
+  #tile2 = rasterio.open(file_tif_ahn).read() 
+
+            #normalized_tile = np.array(normalise(tile, channel_normalisation, meta["width"], meta["height"]))            
+  heightChannel = generate_vegetation_height_channel(vegetation_height_data, vegetation_height_transform, inds.meta["transform"], meta["width"], meta["height"])
+            #tile = np.append(tile, [heightChannel], axis=0)
+
+
+  file_to = file_tif_ndvi.replace("ndvi_only.tif","_ndvi_ahn.tif")
+  file_local = "/home/"+file_to.split("/")[-1]
+  
+  with rasterio.open(file_local, 'w', **meta) as outds:        
+        outds.write_band(1,tile.reshape(tile.shape[1],tile.shape[2]))
+        outds.write_band(2,heightChannel)
+
+  shutil.move(file_local, file_to)
+
+# COMMAND ----------
+
+tile.reshape(tile.shape[1],tile.shape[2]).shape
+
+# COMMAND ----------
+
+tile.shape
+
+# COMMAND ----------
+
+heightChannel.shape
+
+# COMMAND ----------
+
+
+
+# COMMAND ----------
+
+
