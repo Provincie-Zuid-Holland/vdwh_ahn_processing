@@ -1,7 +1,7 @@
 # Databricks notebook source
 # MAGIC %md
 # MAGIC 
-# MAGIC ## This notebook does the preprocessing for the height data or AHN data of the .laz format.
+# MAGIC ## This notebook does the preprocessing for the height data or AHN data of the .laz format for use in remote sensing.
 # MAGIC ### LAZ files are quite large a lot of ram is needed to process them 250 gb ram is not unusual
 
 # COMMAND ----------
@@ -32,6 +32,8 @@ from pyspark.sql.functions import when
 import shutil
 
 # COMMAND ----------
+
+# Various functions to be used.
 
 def calc_median(p, *args):
     """
@@ -83,6 +85,9 @@ def normalize_parameters(src):
      return channel_normalisation
 
 def normalise(tile, norm, w, h):
+  """
+  Further normalize function.
+  """
         newtile = []
         for i in tqdm(range(len(tile))):
             n = norm[i+1]
@@ -101,7 +106,15 @@ def normalise(tile, norm, w, h):
         return newtile
     
 def generate_vegetation_height_channel(vegetation_height_data, vegetation_height_transform, target_transform, target_width, target_height):
-      
+        """
+        Function to convert a .tif, which was created from a .laz file, into a band which can be used in a raster file with other bands.
+        
+        @param vegetation_height_data: numpy array from the ahn .tif file.
+        @param vegetation_height_transform: transform from the ahn .tif meta data.
+        @param target_transform: transform from the satellite .tif meta data.
+        @param target_width: The width from the satellite .tif file.
+        @param target_height: The height from the satellite .tif file.
+        """
         print("Generating vegetation height channel...")
         channel = np.array([[0] * target_width] * target_height, dtype=np.uint8)
         src_height, src_width = vegetation_height_data.shape[0], vegetation_height_data.shape[1]
@@ -117,6 +130,12 @@ def generate_vegetation_height_channel(vegetation_height_data, vegetation_height
         return channel
 
 def generate_ndvi_channel(tile):
+        """
+        Generate ndvi channel from 2 bands.
+        
+        @param tile: rgbi tile to calculate to the NDVI from.
+        @return a NDVI channel.
+        """
         print("Generating NDVI channel...")
         red = tile[2]
         nir = tile[3]
@@ -131,7 +150,9 @@ def merge_raster(input1,bounds, res, nodata, precision):
     return rasterio.merge.merge(input1, bounds, res, nodata, precision)
   
 def merge_tif_files(files, out_put_name, shape_file):
-  
+  """
+    Merge different .tif files into one.
+  """
   bounds=None
   res=None
   nodata=None
@@ -178,6 +199,16 @@ def merge_tif_files(files, out_put_name, shape_file):
   shutil.move("/home/mergedRasters_corrupted.tif", out_put_name)
 
 def run_laz_to_tif(path_laz, path_output_tif, fill_up = True):
+  """
+  This method converts a .laz point cloud into a raster .tif file, which can then be used in a GIS application.
+  The main functionality of this file.  
+  
+  Basically it creates a 2D map with colour as the third dimension of the original 3d point cloud.
+  
+  @param path_laz: path to a .laz file to be converted.
+  @param path_output_tif: path to where to the .tif file will be stored.
+  @param fill_up: Whether or not to fill up empty values.
+  """
   
   if os.path.isdir("/home/tmp") != True:
     os.mkdir("/home/tmp")
@@ -353,13 +384,14 @@ def __make_the_crop(load_shape, raster_path, raster_path_cropped):
 
 # COMMAND ----------
 
-# MAGIC %md
-# MAGIC 
-# MAGIC # Convert Height from .laz to layer in a .tif file.
+# You always need to install the laz file.
+!pip install pylas[lazrs]
 
 # COMMAND ----------
 
-!pip install pylas[lazrs]
+# MAGIC %md
+# MAGIC 
+# MAGIC # Convert Height from .laz to layer in a .tif file.
 
 # COMMAND ----------
 
@@ -374,12 +406,12 @@ for file in glob("/dbfs/mnt/actueelhoogtebestand/ahn4/*[!HN1].LAZ"):
 
 # COMMAND ----------
 
-for file in glob("/dbfs/mnt/actueelhoogtebestand/ahn4/*"):
+for file in glob("/dbfs/mnt/actueelhoogtebestand/ahn3/Coepelduin/*"):
   print(file)
 
 # COMMAND ----------
 
-run_laz_to_tif("/dbfs/mnt/actueelhoogtebestand/ahn4/C_24HZ1.LAZ","/dbfs/mnt/actueelhoogtebestand/ahn4/C_24HZ1.tif")
+run_laz_to_tif("/dbfs/mnt/actueelhoogtebestand/ahn3/Coepelduin/C_30EN2.LAZ","/dbfs/mnt/actueelhoogtebestand/ahn3/Coepelduin/C_30EN2.tif")
 
 # COMMAND ----------
 
@@ -423,13 +455,29 @@ merge_tif_files(files_append,"/dbfs/mnt/actueelhoogtebestand/ahn4/ahn4_waterleid
 
 # COMMAND ----------
 
+__make_the_crop("/dbfs/mnt/satellite-images-nso/natura2000-geojson-gebieden/natura2000_coepelduynen.geojson","/dbfs/mnt/actueelhoogtebestand/ahn3/Coepelduin/C_30EN2.tif", "/home/C_30EN2_coepelduynen.tif")
+
+# COMMAND ----------
+
+# MAGIC %sh
+# MAGIC 
+# MAGIC mv /home/C_30EN2_coepelduynen.tif /dbfs/mnt/actueelhoogtebestand/ahn3/Coepelduin/C_30EN2_coepelduynen.tif
+
+# COMMAND ----------
+
 # MAGIC %md
 # MAGIC 
 # MAGIC # Add height to satellite image.
 
 # COMMAND ----------
 
-ahn_output = '/dbfs/mnt/actueelhoogtebestand/ahn4/C_30EN2_fill_coepelduynen.tif'
+# MAGIC %sh
+# MAGIC 
+# MAGIC ls /dbfs/mnt/actueelhoogtebestand/output/
+
+# COMMAND ----------
+
+ahn_output = '/dbfs/mnt/actueelhoogtebestand/ahn3/Coepelduin/C_30EN2_coepelduynen.tif'
 
 # COMMAND ----------
 
@@ -443,7 +491,7 @@ with rasterio.open(ahn_output, 'r') as inds:
 
 # COMMAND ----------
 
-for file in glob("/dbfs/mnt/e34a505986aa74678a5a0e0f_satellite-images-nso/coepelduynen/202[0|1]*cropped.tif"):
+for file in glob("/dbfs/mnt/e34a505986aa74678a5a0e0f_satellite-images-nso/coepelduynen/201[8|9]*cropped.tif"):
   print(file)
 
 # COMMAND ----------
@@ -454,7 +502,7 @@ for file in glob("/dbfs/mnt/e34a505986aa74678a5a0e0f_satellite-images-nso/coepel
 
 # COMMAND ----------
 
-for file in glob("/dbfs/mnt/e34a505986aa74678a5a0e0f_satellite-images-nso/coepelduynen/202[0|1]*"):
+for file in glob("/dbfs/mnt/e34a505986aa74678a5a0e0f_satellite-images-nso/coepelduynen/201[8|9]*cropped.tif"):
 
   with rasterio.open(file) as inds:  
           #channel_normalisation = normalize_parameters(inds)
